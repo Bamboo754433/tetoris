@@ -2,7 +2,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 st.set_page_config(page_title="Tetris (Mobile Gestures)", page_icon="🧱", layout="centered")
-st.title("🧱 Tetris — 9×20 with Mobile Gestures")
+st.title("🧱 Tetris — 9×20 • Mobile gestures fixed")
 st.caption("Tap=Rotate • Swipe L/R=Move • Swipe ↓=Soft drop • Quick flick ↓=Hard drop • Buttons also work • WASD/Arrows on desktop")
 
 html = r"""
@@ -22,7 +22,7 @@ html = r"""
     border-radius:10px;
     box-shadow:inset 0 0 0 1px #222, 0 10px 30px rgba(0,0,0,.25);
     image-rendering: pixelated; image-rendering: crisp-edges;
-    touch-action: none;               /* critical: let us capture gestures */
+    touch-action: none;               /* capture gestures */
   }
   .panel {
     display:flex; flex-direction:column; gap:10px; min-width:220px;
@@ -50,7 +50,6 @@ html = r"""
 
   .legend { font-size:12px; color:#94a3b8; text-align:center; }
 
-  /* Compact on very small phones */
   @media (max-width: 420px) {
     .pad { grid-template-columns: repeat(5, 52px); gap:8px; }
     .pad button { height:52px; font-size:14px; }
@@ -85,21 +84,26 @@ html = r"""
 <script>
 (() => {
   // ====== Config ======
-  const COLS = 9, ROWS = 20, CELL = 24; // small main game bit (phone friendly)
+  const COLS = 9, ROWS = 20, CELL = 24;
   const W = COLS * CELL, H = ROWS * CELL;
+
+  // Speeds / timings
+  const BASE_DROP_MS = 800;      // level 1 gravity (ms per row)
+  const DROP_ACCEL_PER_LEVEL = 60;
+  const MIN_DROP_MS = 120;
+  const LOCK_DELAY_MS = 450;     // time on floor before auto-lock
+  const SOFT_DROP_RATE_MS = 120; // hold or swipe repeat rate (not crazy fast)
 
   const canvas = document.getElementById('board');
   const ctx = canvas.getContext('2d');
   canvas.width = W; canvas.height = H;
   canvas.style.width = W + "px"; canvas.style.height = H + "px";
 
-  // Colors
   const COLORS = {
     I: "#60a5fa", J:"#a78bfa", L:"#f59e0b", O:"#fbbf24",
     S: "#34d399", T:"#f472b6", Z:"#ef4444"
   };
 
-  // Tetromino shapes (in 4×4 frame)
   const SHAPES = {
     I: [[0,1],[1,1],[2,1],[3,1]],
     J: [[0,0],[0,1],[1,1],[2,1]],
@@ -114,15 +118,17 @@ html = r"""
   let grid = createGrid(COLS, ROWS);
   let falling = null;
   let nextQueue = [];
-  let dropCounter = 0;
-  let lastTime = 0;
   let score = 0, lines = 0, level = 1;
   let running = false, paused = false;
+
+  let dropTimer = 0;      // accumulates ms for gravity
+  let lockTimer = 0;      // accumulates ms while piece is grounded
+  let loopId = null;      // setInterval id
+  let lastTick = 0;       // ms timestamp for dt
 
   const scoreEl = document.getElementById('score');
   const linesEl = document.getElementById('lines');
   const levelEl = document.getElementById('level');
-
   const startBtn = document.getElementById('start');
   const pbtn = document.getElementById('pbtn');
 
@@ -136,7 +142,7 @@ html = r"""
 
   function createGrid(w,h){ return Array.from({length:h}, () => Array(w).fill(null)); }
 
-  // Drawing
+  // ==== Drawing ====
   function drawCell(x,y,color,ghost=false){
     if (x < 0 || x >= COLS || y < 0 || y >= ROWS) return;
     const px = x * CELL, py = y * CELL;
@@ -158,7 +164,6 @@ html = r"""
     ctx.strokeStyle = "#334155";
     ctx.lineWidth = 2;
     ctx.strokeRect(0.5,0.5,COLS*CELL-1,ROWS*CELL-1);
-    // inner grid
     ctx.lineWidth = 1;
     ctx.strokeStyle = "rgba(148,163,184,.25)";
     for (let x=1;x<COLS;x++){ const gx = x*CELL+0.5; ctx.beginPath(); ctx.moveTo(gx,1); ctx.lineTo(gx,ROWS*CELL-1); ctx.stroke(); }
@@ -183,7 +188,7 @@ html = r"""
     drawGridLines();
   }
 
-  // Game logic
+  // ==== Logic ====
   function newPiece(){
     if (nextQueue.length < 7){
       const bag = Object.keys(SHAPES);
@@ -192,13 +197,15 @@ html = r"""
     }
     const type = nextQueue.shift();
     falling = new Tetromino(type);
+    dropTimer = 0;
+    lockTimer = 0;
     if (collides(falling,0,0,falling.shape)){ gameOver(); return; }
   }
 
   function Tetromino(type){
     this.type = type;
-    this.x = Math.floor((COLS-4)/2);  // center spawn for 9-wide
-    this.y = -2;                       // spawn above, not drawn until y>=0
+    this.x = Math.floor((COLS-4)/2);
+    this.y = -2;
     this.shape = SHAPES[type].map(v=>v.slice());
     this.blocks = () => this.shape;
   }
@@ -208,7 +215,7 @@ html = r"""
   function wallKick(t,newShape,dx=0,dy=0){
     const kicks=[[0,0],[1,0],[-1,0],[2,0],[-2,0],[0,-1]];
     for(const[kx,ky]of kicks){
-      if(!collides(t,dx+kx,dy+ky,newShape)){ t.x+=dx+kx;t.y+=dy+ky;t.shape=newShape;return true; }
+      if(!collides(t,dx+kx,dy+ky,newShape)){ t.x+=dx+kx;t.y+=dy+ky;t.shape=newShape; return true; }
     } return false;
   }
 
@@ -231,11 +238,11 @@ html = r"""
   function updateHUD(){ scoreEl.textContent=score; linesEl.textContent=lines; levelEl.textContent=level; }
 
   function lockPiece(){
-    // Ceiling death: any block above row 0 when locking => game over
     let hitCeiling=false;
     for(const[px,py]of falling.blocks()){
       const x=falling.x+px, y=falling.y+py;
-      if(y<0){hitCeiling=true;} else if(y<ROWS){ grid[y][x]=COLORS[falling.type]; }
+      if(y<0){ hitCeiling=true; }
+      else if(y<ROWS){ grid[y][x]=COLORS[falling.type]; }
     }
     if(hitCeiling){ gameOver(); return; }
     const cleared=clearLines();
@@ -251,18 +258,13 @@ html = r"""
 
   function ghostDropY(){ let dy=0; while(!collides(falling,0,dy+1,falling.shape))dy++; return falling.y+dy; }
 
-  function step(dt){
-    if(!running || paused) return;
-    dropCounter += dt;
-    const speed = Math.max(80, 800 - (level-1)*60);
-    if(dropCounter > speed){
-      if(collides(falling,0,1,falling.shape)){ lockPiece(); }
-      else { falling.y++; }
-      dropCounter = 0;
-    }
-  }
+  // ==== Input helpers (reset lock timer on movement) ====
+  function moveLeft(){ if(!collides(falling,-1,0,falling.shape)){ falling.x--; lockTimer=0; } }
+  function moveRight(){ if(!collides(falling, 1,0,falling.shape)){ falling.x++; lockTimer=0; } }
+  function rotateAction(){ const rotated = rotate(falling.shape.map(p=>p.slice())); if(wallKick(falling, rotated)) lockTimer=0; }
+  function softDropAction(){ if(!collides(falling,0,1,falling.shape)){ falling.y++; score+=1; updateHUD(); } }
 
-  // ====== Desktop keyboard ======
+  // ==== Desktop keyboard ====
   document.addEventListener('keydown',(e)=>{
     const left=e.code==='KeyA'||e.code==='ArrowLeft';
     const right=e.code==='KeyD'||e.code==='ArrowRight';
@@ -275,73 +277,59 @@ html = r"""
     else if(right) moveRight();
     else if(down) softDropAction();
     else if(rot) rotateAction();
-    else if(hard){ e.preventDefault(); hardDropAction(); }
+    else if(hard){ e.preventDefault(); hardDrop(); }
   });
 
-  // ====== Shared control actions ======
-  function moveLeft(){ if(!collides(falling,-1,0,falling.shape)) falling.x--; }
-  function moveRight(){ if(!collides(falling, 1,0,falling.shape)) falling.x++; }
-  function rotateAction(){ const rotated = rotate(falling.shape.map(p=>p.slice())); wallKick(falling, rotated); }
-  function softDropAction(){ if(!collides(falling,0,1,falling.shape)){ falling.y++; score+=1; updateHUD(); } }
-  function hardDropAction(){ hardDrop(); }
-
-  // ====== Mobile on-screen buttons (hold-to-repeat) ======
-  function repeatWhileHold(el, fn, interval=110){
+  // ==== Mobile on-screen buttons (moderate repeat speed) ====
+  function repeatWhileHold(el, fn, interval){
     let t=null;
     const start=(e)=>{ e.preventDefault(); if(!running||paused||!falling) return; fn(); t=setInterval(fn, interval); };
     const stop =()=>{ if(t){ clearInterval(t); t=null; } };
     el.addEventListener('pointerdown', start, {passive:false});
     ['pointerup','pointerleave','pointercancel'].forEach(ev=> el.addEventListener(ev, stop));
   }
-  repeatWhileHold(leftBtn, moveLeft);
-  repeatWhileHold(rightBtn, moveRight);
-  repeatWhileHold(softBtn, softDropAction, 80);
-  hardBtn.addEventListener('pointerdown', (e)=>{ e.preventDefault(); if(!running||paused||!falling) return; hardDropAction(); }, {passive:false});
+  repeatWhileHold(leftBtn, moveLeft, 140);
+  repeatWhileHold(rightBtn, moveRight, 140);
+  repeatWhileHold(softBtn, softDropAction, SOFT_DROP_RATE_MS);
+  hardBtn.addEventListener('pointerdown', (e)=>{ e.preventDefault(); if(!running||paused||!falling) return; hardDrop(); }, {passive:false});
   rotBtn.addEventListener('pointerdown', (e)=>{ e.preventDefault(); if(!running||paused||!falling) return; rotateAction(); }, {passive:false});
   pauseBtn.addEventListener('pointerdown', (e)=>{ e.preventDefault(); togglePause(); }, {passive:false});
 
-  // ====== Gesture controls on canvas ======
-  let touch = {active:false, x0:0, y0:0, lastX:0, lastY:0, moved:false, t0:0, accumX:0, accumY:0};
-  const SWIPE_COL = CELL * 0.6;     // horizontal distance for one column move
-  const SWIPE_SOFT = CELL * 0.5;    // vertical distance per soft drop step
-  const FLICK_DOWN_DIST = CELL * 2; // quick flick threshold
-  const FLICK_TIME = 200;           // ms
+  // ==== Gestures on canvas (throttled soft drop) ====
+  let touch = {active:false, x0:0, y0:0, lastX:0, lastY:0, moved:false, t0:0};
+  let lastSoftMs = 0;
+  const SWIPE_COL = CELL * 0.6;
+  const FLICK_DOWN_DIST = CELL * 2;
+  const FLICK_TIME = 200;
 
-  function canvasPoint(e){
-    const rect = canvas.getBoundingClientRect();
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
-  }
+  function canvasPoint(e){ const r=canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
 
   canvas.addEventListener('pointerdown', (e)=>{
     e.preventDefault();
-    touch.active = true; touch.moved=false;
-    const p = canvasPoint(e);
-    touch.x0 = touch.lastX = p.x;
-    touch.y0 = touch.lastY = p.y;
-    touch.t0 = performance.now();
-    touch.accumX = 0; touch.accumY = 0;
+    touch.active=true; touch.moved=false;
+    const p=canvasPoint(e); touch.x0=touch.lastX=p.x; touch.y0=touch.lastY=p.y; touch.t0=performance.now();
   }, {passive:false});
 
   canvas.addEventListener('pointermove', (e)=>{
     if(!touch.active || !running || paused || !falling) return;
     e.preventDefault();
-    const p = canvasPoint(e);
+    const p=canvasPoint(e);
     const dx = p.x - touch.lastX;
     const dy = p.y - touch.lastY;
-    touch.lastX = p.x; touch.lastY = p.y;
+    touch.lastX=p.x; touch.lastY=p.y;
+    if(Math.hypot(p.x-touch.x0, p.y-touch.y0) > 6) touch.moved = true;
 
-    const totalDx = p.x - touch.x0;
-    const totalDy = p.y - touch.y0;
-    if(Math.hypot(totalDx, totalDy) > 6) touch.moved = true;
+    // Horizontal moves per column distance
+    let accumX = dx;
+    while (accumX <= -SWIPE_COL) { moveLeft();  accumX += SWIPE_COL; }
+    while (accumX >=  SWIPE_COL) { moveRight(); accumX -= SWIPE_COL; }
 
-    // Horizontal: move by columns as finger slides
-    touch.accumX += dx;
-    while (touch.accumX <= -SWIPE_COL) { moveLeft();  touch.accumX += SWIPE_COL; }
-    while (touch.accumX >=  SWIPE_COL) { moveRight(); touch.accumX -= SWIPE_COL; }
-
-    // Vertical: soft drop continuously while dragging down
-    touch.accumY += dy;
-    while (touch.accumY >= SWIPE_SOFT) { softDropAction(); touch.accumY -= SWIPE_SOFT; }
+    // Throttled soft drop while dragging down
+    const now = performance.now();
+    if (dy > 4 && now - lastSoftMs >= SOFT_DROP_RATE_MS) {
+      softDropAction();
+      lastSoftMs = now;
+    }
   }, {passive:false});
 
   function endGesture(e){
@@ -350,47 +338,64 @@ html = r"""
     const dt = performance.now() - touch.t0;
     const dy = touch.lastY - touch.y0;
     if(!touch.moved && dt < 200){
-      // Tap = rotate
-      if(running && !paused && falling) rotateAction();
+      if(running && !paused && falling) rotateAction(); // tap
     } else if (dy > FLICK_DOWN_DIST && dt < FLICK_TIME){
-      // Quick flick down = hard drop
-      if(running && !paused && falling) hardDropAction();
+      if(running && !paused && falling) hardDrop();     // flick down
     }
-    touch.active = false;
+    touch.active=false;
   }
   canvas.addEventListener('pointerup', endGesture, {passive:false});
   canvas.addEventListener('pointercancel', endGesture, {passive:false});
   canvas.addEventListener('pointerleave', (e)=>{ if(touch.active) endGesture(e); }, {passive:false});
 
-  // ====== Controls (Start/Pause) ======
+  // ==== Start / Pause ====
   startBtn.addEventListener('click', start);
   pbtn.addEventListener('click', togglePause);
-
   function togglePause(){ if(!running) return; paused = !paused; }
 
-  // ====== Loop ======
-  let rafId = null;
-  function loop(ts){
-    if(!lastTime) lastTime = ts;
-    const dt = Math.min((ts - lastTime)/1000, 0.033);
-    lastTime = ts;
-    step(dt);
+  // ==== Game loop (mobile-safe setInterval clock) ====
+  function loopTick(){
+    if(!running){ drawBoard(); return; }
+    const now = performance.now();
+    if(!lastTick) lastTick = now;
+    let dtMs = now - lastTick; if (dtMs > 50) dtMs = 50;  // clamp big pauses
+    lastTick = now;
+
+    if(!paused){
+      // Gravity
+      const speedMs = Math.max(MIN_DROP_MS, BASE_DROP_MS - (level-1)*DROP_ACCEL_PER_LEVEL);
+      dropTimer += dtMs;
+      if(dropTimer >= speedMs){
+        dropTimer -= speedMs;
+        if(collides(falling,0,1,falling.shape)){
+          // start/advance lock timer on ground
+          lockTimer += speedMs;
+          if(lockTimer >= LOCK_DELAY_MS){
+            lockPiece();
+            lockTimer = 0;
+          }
+        }else{
+          falling.y++;
+          lockTimer = 0;
+        }
+      }
+    }
     drawBoard();
-    rafId = requestAnimationFrame(loop);
   }
 
   function start(){
     grid = createGrid(COLS, ROWS);
     score=0; lines=0; level=1; nextQueue=[];
-    running=true; paused=false; dropCounter=0; lastTime=0;
+    running=true; paused=false; dropTimer=0; lockTimer=0; lastTick=0;
     newPiece(); updateHUD();
-    if(rafId) cancelAnimationFrame(rafId);
-    rafId = requestAnimationFrame(loop);
+    if(loopId) clearInterval(loopId);
+    loopId = setInterval(loopTick, 1000/60); // 60 Hz clock (stable on mobile)
   }
 
   function gameOver(){
     running=false; paused=false;
-    // overlay
+    if(loopId){ clearInterval(loopId); loopId=null; }
+    drawBoard();
     ctx.save();
     ctx.fillStyle="rgba(0,0,0,.6)"; ctx.fillRect(0,0,canvas.width,canvas.height);
     ctx.fillStyle="#e2e8f0"; ctx.font="bold 20px system-ui"; ctx.textAlign="center";
@@ -400,7 +405,7 @@ html = r"""
     ctx.restore();
   }
 
-  // initial frame
+  // initial draw
   drawBoard();
 })();
 </script>
