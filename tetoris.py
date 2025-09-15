@@ -2,8 +2,8 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 st.set_page_config(page_title="Tetris (Mobile Gestures)", page_icon="🧱", layout="centered")
-st.title("🧱 Tetris — 9×20 • Mobile gestures fixed")
-st.caption("Tap=Rotate • Swipe L/R=Move • Swipe ↓=Soft drop • Quick flick ↓=Hard drop • Buttons also work • WASD/Arrows on desktop")
+st.title("🧱 Tetris — 9×20 • Mobile-friendly")
+st.caption("Tap=Rotate • Swipe L/R=Move • Swipe ↓=Soft drop • Quick flick ↓=Hard drop • Buttons work • WASD/Arrows on desktop")
 
 html = r"""
 <!DOCTYPE html>
@@ -22,7 +22,7 @@ html = r"""
     border-radius:10px;
     box-shadow:inset 0 0 0 1px #222, 0 10px 30px rgba(0,0,0,.25);
     image-rendering: pixelated; image-rendering: crisp-edges;
-    touch-action: none;               /* capture gestures */
+    touch-action: none; /* capture gestures on mobile */
   }
   .panel {
     display:flex; flex-direction:column; gap:10px; min-width:220px;
@@ -84,26 +84,28 @@ html = r"""
 <script>
 (() => {
   // ====== Config ======
-  const COLS = 9, ROWS = 20, CELL = 24;
+  const COLS = 9, ROWS = 20, CELL = 24; // compact, phone-friendly
   const W = COLS * CELL, H = ROWS * CELL;
 
   // Speeds / timings
-  const BASE_DROP_MS = 800;      // level 1 gravity (ms per row)
+  const BASE_DROP_MS = 800;      // gravity at level 1 (ms per row)
   const DROP_ACCEL_PER_LEVEL = 60;
   const MIN_DROP_MS = 120;
-  const LOCK_DELAY_MS = 450;     // time on floor before auto-lock
-  const SOFT_DROP_RATE_MS = 120; // hold or swipe repeat rate (not crazy fast)
+  const LOCK_DELAY_MS = 450;     // floor delay before auto-lock
+  const SOFT_DROP_RATE_MS = 120; // soft drop repeat (moderate)
 
   const canvas = document.getElementById('board');
   const ctx = canvas.getContext('2d');
   canvas.width = W; canvas.height = H;
   canvas.style.width = W + "px"; canvas.style.height = H + "px";
 
+  // Colors
   const COLORS = {
     I: "#60a5fa", J:"#a78bfa", L:"#f59e0b", O:"#fbbf24",
     S: "#34d399", T:"#f472b6", Z:"#ef4444"
   };
 
+  // Shapes (4×4 frame)
   const SHAPES = {
     I: [[0,1],[1,1],[2,1],[3,1]],
     J: [[0,0],[0,1],[1,1],[2,1]],
@@ -121,10 +123,11 @@ html = r"""
   let score = 0, lines = 0, level = 1;
   let running = false, paused = false;
 
-  let dropTimer = 0;      // accumulates ms for gravity
-  let lockTimer = 0;      // accumulates ms while piece is grounded
-  let loopId = null;      // setInterval id
-  let lastTick = 0;       // ms timestamp for dt
+  // timing
+  let dropTimer = 0; // ms accumulated for gravity
+  let lockTimer = 0; // ms accumulated while grounded
+  let loopId = null; // setInterval id
+  let lastTick = 0;  // last tick timestamp
 
   const scoreEl = document.getElementById('score');
   const linesEl = document.getElementById('lines');
@@ -164,6 +167,7 @@ html = r"""
     ctx.strokeStyle = "#334155";
     ctx.lineWidth = 2;
     ctx.strokeRect(0.5,0.5,COLS*CELL-1,ROWS*CELL-1);
+    // inner grid
     ctx.lineWidth = 1;
     ctx.strokeStyle = "rgba(148,163,184,.25)";
     for (let x=1;x<COLS;x++){ const gx = x*CELL+0.5; ctx.beginPath(); ctx.moveTo(gx,1); ctx.lineTo(gx,ROWS*CELL-1); ctx.stroke(); }
@@ -204,8 +208,8 @@ html = r"""
 
   function Tetromino(type){
     this.type = type;
-    this.x = Math.floor((COLS-4)/2);
-    this.y = -2;
+    this.x = Math.floor((COLS-4)/2); // centered for 9-wide
+    this.y = -2;                      // spawn above, not drawn until y>=0
     this.shape = SHAPES[type].map(v=>v.slice());
     this.blocks = () => this.shape;
   }
@@ -238,6 +242,7 @@ html = r"""
   function updateHUD(){ scoreEl.textContent=score; linesEl.textContent=lines; levelEl.textContent=level; }
 
   function lockPiece(){
+    // ceiling death if any cell still above row 0
     let hitCeiling=false;
     for(const[px,py]of falling.blocks()){
       const x=falling.x+px, y=falling.y+py;
@@ -295,19 +300,21 @@ html = r"""
   rotBtn.addEventListener('pointerdown', (e)=>{ e.preventDefault(); if(!running||paused||!falling) return; rotateAction(); }, {passive:false});
   pauseBtn.addEventListener('pointerdown', (e)=>{ e.preventDefault(); togglePause(); }, {passive:false});
 
-  // ==== Gestures on canvas (throttled soft drop) ====
-  let touch = {active:false, x0:0, y0:0, lastX:0, lastY:0, moved:false, t0:0};
+  // ==== Gestures on canvas (keeps small accumulators across move) ====
+  let touch = {active:false, x0:0, y0:0, lastX:0, lastY:0, moved:false, t0:0, accumX:0};
   let lastSoftMs = 0;
-  const SWIPE_COL = CELL * 0.6;
-  const FLICK_DOWN_DIST = CELL * 2;
-  const FLICK_TIME = 200;
+  const SWIPE_COL = CELL * 0.6;   // distance for one column move
+  const FLICK_DOWN_DIST = CELL*2; // flick hard drop threshold
+  const FLICK_TIME = 200;         // ms
 
   function canvasPoint(e){ const r=canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
 
   canvas.addEventListener('pointerdown', (e)=>{
     e.preventDefault();
     touch.active=true; touch.moved=false;
-    const p=canvasPoint(e); touch.x0=touch.lastX=p.x; touch.y0=touch.lastY=p.y; touch.t0=performance.now();
+    const p=canvasPoint(e);
+    touch.x0=touch.lastX=p.x; touch.y0=touch.lastY=p.y; touch.t0=performance.now();
+    touch.accumX = 0;
   }, {passive:false});
 
   canvas.addEventListener('pointermove', (e)=>{
@@ -319,14 +326,14 @@ html = r"""
     touch.lastX=p.x; touch.lastY=p.y;
     if(Math.hypot(p.x-touch.x0, p.y-touch.y0) > 6) touch.moved = true;
 
-    // Horizontal moves per column distance
-    let accumX = dx;
-    while (accumX <= -SWIPE_COL) { moveLeft();  accumX += SWIPE_COL; }
-    while (accumX >=  SWIPE_COL) { moveRight(); accumX -= SWIPE_COL; }
+    // Horizontal: accumulate and move by columns
+    touch.accumX += dx;
+    while (touch.accumX <= -SWIPE_COL) { moveLeft();  touch.accumX += SWIPE_COL; }
+    while (touch.accumX >=  SWIPE_COL) { moveRight(); touch.accumX -= SWIPE_COL; }
 
     // Throttled soft drop while dragging down
     const now = performance.now();
-    if (dy > 4 && now - lastSoftMs >= SOFT_DROP_RATE_MS) {
+    if (dy > 4 && (now - lastSoftMs) >= SOFT_DROP_RATE_MS) {
       softDropAction();
       lastSoftMs = now;
     }
@@ -338,9 +345,9 @@ html = r"""
     const dt = performance.now() - touch.t0;
     const dy = touch.lastY - touch.y0;
     if(!touch.moved && dt < 200){
-      if(running && !paused && falling) rotateAction(); // tap
+      if(running && !paused && falling) rotateAction(); // tap to rotate
     } else if (dy > FLICK_DOWN_DIST && dt < FLICK_TIME){
-      if(running && !paused && falling) hardDrop();     // flick down
+      if(running && !paused && falling) hardDrop();     // quick flick down
     }
     touch.active=false;
   }
@@ -353,33 +360,44 @@ html = r"""
   pbtn.addEventListener('click', togglePause);
   function togglePause(){ if(!running) return; paused = !paused; }
 
-  // ==== Game loop (mobile-safe setInterval clock) ====
+  // ==== Game loop (mobile-safe setInterval) ====
   function loopTick(){
+    // always draw; auto-gravity even when not touching
     if(!running){ drawBoard(); return; }
     const now = performance.now();
     if(!lastTick) lastTick = now;
-    let dtMs = now - lastTick; if (dtMs > 50) dtMs = 50;  // clamp big pauses
+    let dt = now - lastTick;
+    if (dt > 50) dt = 50; // clamp long pauses
     lastTick = now;
 
-    if(!paused){
-      // Gravity
+    if(!paused && falling){
       const speedMs = Math.max(MIN_DROP_MS, BASE_DROP_MS - (level-1)*DROP_ACCEL_PER_LEVEL);
-      dropTimer += dtMs;
-      if(dropTimer >= speedMs){
+      dropTimer += dt;
+
+      // Grounded check BEFORE dropping; drives lock timer
+      const grounded = collides(falling, 0, 1, falling.shape);
+      if (grounded) {
+        lockTimer += dt;
+        if (lockTimer >= LOCK_DELAY_MS) {
+          lockPiece();
+          // newPiece() resets timers; draw below
+        }
+      } else {
+        lockTimer = 0;
+      }
+
+      // Apply gravity in rows when enough time accumulated
+      while (dropTimer >= speedMs && running && !paused && falling) {
         dropTimer -= speedMs;
-        if(collides(falling,0,1,falling.shape)){
-          // start/advance lock timer on ground
-          lockTimer += speedMs;
-          if(lockTimer >= LOCK_DELAY_MS){
-            lockPiece();
-            lockTimer = 0;
-          }
-        }else{
+        if (!collides(falling, 0, 1, falling.shape)) {
           falling.y++;
-          lockTimer = 0;
+        } else {
+          // On ground: let lock timer handle the fix; break to avoid repeated adds
+          break;
         }
       }
     }
+
     drawBoard();
   }
 
@@ -389,7 +407,7 @@ html = r"""
     running=true; paused=false; dropTimer=0; lockTimer=0; lastTick=0;
     newPiece(); updateHUD();
     if(loopId) clearInterval(loopId);
-    loopId = setInterval(loopTick, 1000/60); // 60 Hz clock (stable on mobile)
+    loopId = setInterval(loopTick, 1000/60); // steady 60Hz clock on mobile
   }
 
   function gameOver(){
