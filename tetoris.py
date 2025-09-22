@@ -1,8 +1,8 @@
 import streamlit as st
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Tetris (Mobile Gestures)", page_icon="🧱", layout="centered")
-st.title("🧱 Tetris — 9×20 • Mobile-friendly")
+st.set_page_config(page_title="Tetris ()", page_icon="🧱", layout="centered")
+st.title("🧱 Tetris ")
 st.caption("Tap=Rotate • Swipe L/R=Move • Swipe ↓=Soft drop • Quick flick ↓=Hard drop • Buttons work • WASD/Arrows on desktop")
 
 html = r"""
